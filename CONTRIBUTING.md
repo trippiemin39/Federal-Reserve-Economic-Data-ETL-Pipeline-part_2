@@ -7,9 +7,9 @@ These are our team rules. Read them before you start working.
 | Name | GitHub |
 |---|---|
 | Min Tun | @trippiemin39 |
-| _[teammate name]_ | _[@github-name]_ |
+| _Wenyu Damen_ | _@Player7B48_ |
 
-**Chat:** _[WhatsApp / Discord]_. This is where we talk every day.
+**Chat:** _[Discord]_. This is where we talk every day.
 
 ---
 
