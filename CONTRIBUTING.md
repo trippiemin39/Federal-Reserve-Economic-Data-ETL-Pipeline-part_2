@@ -9,7 +9,7 @@ These are our team rules. Read them before you start working.
 | Min Tun | @trippiemin39 |
 | _Wenyu Damen_ | _@Player7B48_ |
 
-**Chat:** _[Discord]_. This is where we talk every day.
+**Chat:** _Discord_. This is where we talk every day.
 
 ---
 
