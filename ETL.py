@@ -113,14 +113,14 @@ class Pipeline(object):
             })
             return DIM_indicator
 
-        # settin the start and end for Dimension date and making the dimension date
-        def build_date_dimension():
-            start = "1947-01-01"
-            end = "2030-12-31"
+        # making the date dimension from the first date in our data until 2030
+        # date_id is a number like 20240101, so the fact table can link to it
+        def build_date_dimension(start, end="2030-12-31"):
             dates = pd.date_range(start=start, end=end, freq="D")
 
             DIM_date = pd.DataFrame({
-                "full_date": dates,
+                "date_id": dates.strftime("%Y%m%d").astype(int),
+                "full_date": dates.strftime("%Y-%m-%d"),
                 "month": dates.month,
                 "year": dates.year,
                 "quarter": dates.quarter,
@@ -144,12 +144,15 @@ class Pipeline(object):
 
             facttable["region_id"] = 1
             facttable["observation_id"] = range(1, len(facttable) + 1)
+            facttable["date_id"] = facttable["date"].dt.strftime("%Y%m%d").astype(int)
 
             facttable.drop(
-                ["indicator", "indicator_code", "name", "category", "unit"],
+                ["indicator", "indicator_code", "name", "category", "unit", "date"],
                 axis=1,
                 inplace=True
             )
+            # fixed column order, because load() inserts the csv columns in this order
+            facttable = facttable[["observation_id", "indicator_id", "region_id", "date_id", "value"]]
             return facttable
 
 
@@ -170,7 +173,8 @@ class Pipeline(object):
 
             DIM_region = build_region_dimension()
             DIM_indicator = build_indicator_dimension()
-            DIM_date = build_date_dimension()
+            first_date = min(df["date"].min() for df in dfs.values())
+            DIM_date = build_date_dimension(first_date)
 
             facttable = attach_keys(dfs, DIM_indicator)
 
@@ -187,17 +191,18 @@ class Pipeline(object):
             #connect to the database
         def connect_db(datawarehouse):
             conn = sqlite3.connect(datawarehouse)
+            conn.execute("PRAGMA foreign_keys = ON;")  # SQLite checks foreign keys only when this is on
             return conn
 
         #creating 4 tables with hand written CREATE table statements including primary and forein keys
         def create_tables(conn):
             cur = conn.cursor()
 
+            # drop the fact table first, because it points to the dimensions
+            cur.execute("""DROP TABLE IF EXISTS facttable_observation;""")
             cur.execute("""DROP TABLE IF EXISTS dim_indicator;""")
             cur.execute("""DROP TABLE IF EXISTS dim_region;""")
             cur.execute("""DROP TABLE IF EXISTS dim_date;""")
-            cur.execute("""DROP TABLE IF EXISTS facttable_observation;""")
-            conn.execute("PRAGMA foreign_keys = ON;")
 
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_indicator(
                             indicator_id INTEGER primary key,
@@ -212,6 +217,7 @@ class Pipeline(object):
                             region_name TEXT);""")
 
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_date(
+                            date_id INTEGER PRIMARY KEY,
                             full_date TEXT,
                             month INTEGER,
                             year INTEGER,
@@ -222,7 +228,7 @@ class Pipeline(object):
                         observation_id INTEGER primary key,
                         indicator_id INTEGER REFERENCES dim_indicator(indicator_id),
                         region_id INTEGER REFERENCES dim_region(region_id),
-                        date TEXT,
+                        date_id INTEGER REFERENCES dim_date(date_id),
                         value FLOAT);""")
             conn.commit()
 
@@ -249,12 +255,12 @@ class Pipeline(object):
             load_table(conn, "DIM_indicator.csv", "dim_indicator",
                        ["indicator_id", "indicator_code", "name", "category", "unit"])
             load_table(conn, "DIM_date.csv", "dim_date",
-                       ["full_date", "month", "year", "quarter", "month_name"])
+                       ["date_id", "full_date", "month", "year", "quarter", "month_name"])
             load_table(conn, "DIM_region.csv", "dim_region",
                        ["region_id", "region_code", "region_name"])
 
             load_table(conn, "facttable.csv", "facttable_observation",
-                       ["date", "value", "indicator_id", "region_id", "observation_id"])
+                       ["observation_id", "indicator_id", "region_id", "date_id", "value"])
         main()
 
 
@@ -263,7 +269,6 @@ if __name__ == "__main__":
     pipeline.extract()
     pipeline.transform()
     pipeline.load()
-
 
 
 
