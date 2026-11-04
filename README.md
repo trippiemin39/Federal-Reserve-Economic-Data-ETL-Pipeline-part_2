@@ -36,6 +36,7 @@ This project builds on [Part 1](https://github.com/trippiemin39/Federal-Reserve-
 - Creates the tables with primary and foreign keys and loads them into `FREDDY.db` (dimensions first, fact table last).
 
 ## Data model
+<img width="1774" height="887" alt="image" src="https://github.com/user-attachments/assets/55818d8a-ba0b-4005-a9af-68f96fa5fc00" />
 
 A star schema with one fact table and three dimensions.
 
