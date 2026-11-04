@@ -13,6 +13,10 @@ series_id = {"CPI":"CPIAUCSL",
           "Recession_indicator":"USREC"
           }
 
+# All 6 series overlap from 1997-01 (natural gas starts last).
+# We cut all data before this date, so every indicator covers the same period.
+START_DATE = "1997-01-01"
+
 class Pipeline(object):
     def extract(self):
         # Opening API_CODE map to get personal API from fred i put my IPA in a txt document
@@ -93,6 +97,20 @@ class Pipeline(object):
             monthly["indicator"] = df["indicator"].iloc[0]
             return monthly
 
+        # keeping only data from START_DATE, so all indicators start at the same time
+        def filter_start_date(df):
+            return df[df["date"] >= START_DATE].reset_index(drop=True)
+
+        # DATA GAP CHECK: prints the months that are missing per indicator
+        # known gap: October 2025 is missing in CPI (US government shutdown, no BLS data)
+        def report_data_gaps(dfs):
+            for name, df in dfs.items():
+                all_months = pd.date_range(df["date"].min(), df["date"].max(), freq="MS")
+                missing = all_months.difference(df["date"])
+                if len(missing) > 0:
+                    print(f"⚠️ {name} is missing {len(missing)} month(s): "
+                          f"{[d.strftime('%Y-%m') for d in missing]}")
+
         #building dim_region, this dimension will be important in part 2.
         def build_region_dimension():
             DIM_region = pd.DataFrame({
@@ -113,14 +131,14 @@ class Pipeline(object):
             })
             return DIM_indicator
 
-        # settin the start and end for Dimension date and making the dimension date
-        def build_date_dimension():
-            start = "1947-01-01"
-            end = "2030-12-31"
+        # making the date dimension from START_DATE until 2030
+        # date_id is a number like 20240101, so the fact table can link to it
+        def build_date_dimension(start=START_DATE, end="2030-12-31"):
             dates = pd.date_range(start=start, end=end, freq="D")
 
             DIM_date = pd.DataFrame({
-                "full_date": dates,
+                "date_id": dates.strftime("%Y%m%d").astype(int),
+                "full_date": dates.strftime("%Y-%m-%d"),
                 "month": dates.month,
                 "year": dates.year,
                 "quarter": dates.quarter,
@@ -144,12 +162,15 @@ class Pipeline(object):
 
             facttable["region_id"] = 1
             facttable["observation_id"] = range(1, len(facttable) + 1)
+            facttable["date_id"] = facttable["date"].dt.strftime("%Y%m%d").astype(int)
 
             facttable.drop(
-                ["indicator", "indicator_code", "name", "category", "unit"],
+                ["indicator", "indicator_code", "name", "category", "unit", "date"],
                 axis=1,
                 inplace=True
             )
+            # fixed column order, because load() inserts the csv columns in this order
+            facttable = facttable[["observation_id", "indicator_id", "region_id", "date_id", "value"]]
             return facttable
 
 
@@ -167,6 +188,11 @@ class Pipeline(object):
 
             for name in ["Gas_price", "Oil_price"]:
                 dfs[name] = resample_price_series(dfs[name])
+
+            for name in dfs:
+                dfs[name] = filter_start_date(dfs[name])
+
+            report_data_gaps(dfs)
 
             DIM_region = build_region_dimension()
             DIM_indicator = build_indicator_dimension()
@@ -187,17 +213,18 @@ class Pipeline(object):
             #connect to the database
         def connect_db(datawarehouse):
             conn = sqlite3.connect(datawarehouse)
+            conn.execute("PRAGMA foreign_keys = ON;")  # SQLite checks foreign keys only when this is on
             return conn
 
         #creating 4 tables with hand written CREATE table statements including primary and forein keys
         def create_tables(conn):
             cur = conn.cursor()
 
+            # drop the fact table first, because it points to the dimensions
+            cur.execute("""DROP TABLE IF EXISTS facttable_observation;""")
             cur.execute("""DROP TABLE IF EXISTS dim_indicator;""")
             cur.execute("""DROP TABLE IF EXISTS dim_region;""")
             cur.execute("""DROP TABLE IF EXISTS dim_date;""")
-            cur.execute("""DROP TABLE IF EXISTS facttable_observation;""")
-            conn.execute("PRAGMA foreign_keys = ON;")
 
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_indicator(
                             indicator_id INTEGER primary key,
@@ -212,6 +239,7 @@ class Pipeline(object):
                             region_name TEXT);""")
 
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_date(
+                            date_id INTEGER PRIMARY KEY,
                             full_date TEXT,
                             month INTEGER,
                             year INTEGER,
@@ -222,7 +250,7 @@ class Pipeline(object):
                         observation_id INTEGER primary key,
                         indicator_id INTEGER REFERENCES dim_indicator(indicator_id),
                         region_id INTEGER REFERENCES dim_region(region_id),
-                        date TEXT,
+                        date_id INTEGER REFERENCES dim_date(date_id),
                         value FLOAT);""")
             conn.commit()
 
@@ -249,12 +277,12 @@ class Pipeline(object):
             load_table(conn, "DIM_indicator.csv", "dim_indicator",
                        ["indicator_id", "indicator_code", "name", "category", "unit"])
             load_table(conn, "DIM_date.csv", "dim_date",
-                       ["full_date", "month", "year", "quarter", "month_name"])
+                       ["date_id", "full_date", "month", "year", "quarter", "month_name"])
             load_table(conn, "DIM_region.csv", "dim_region",
                        ["region_id", "region_code", "region_name"])
 
             load_table(conn, "facttable.csv", "facttable_observation",
-                       ["date", "value", "indicator_id", "region_id", "observation_id"])
+                       ["observation_id", "indicator_id", "region_id", "date_id", "value"])
         main()
 
 
@@ -263,10 +291,6 @@ if __name__ == "__main__":
     pipeline.extract()
     pipeline.transform()
     pipeline.load()
-
-
-
-
 
 
 
