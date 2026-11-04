@@ -1,4 +1,4 @@
-<img width="1774" height="887" alt="image" src="https://github.com/user-attachments/assets/7f1f79e5-c753-4fb6-a9ed-90abbb282f15" /># Federal Reserve Economic Data ETL Pipeline – Part 2
+# Federal Reserve Economic Data ETL Pipeline – Part 2
 
 An ETL pipeline that combines national economic data (FRED), electricity data per US state (EIA) and data center data per state (EPRI) in one star-schema data warehouse (SQLite), to research the link between energy prices, inflation and data centers.
 
@@ -19,7 +19,7 @@ This project builds on [Part 1](https://github.com/trippiemin39/Federal-Reserve-
 
 ## Architecture
 
-![Pipeline diagram part 2](docs/pipeline_diagram_part2.png)
+<img width="1774" height="887" alt="image" src="https://github.com/user-attachments/assets/7f1f79e5-c753-4fb6-a9ed-90abbb282f15" />
 
 **Extract**
 - FRED API → 6 national indicators → `extract_output.json`
