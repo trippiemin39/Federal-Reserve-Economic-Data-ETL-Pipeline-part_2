@@ -3,6 +3,10 @@ import pandas as pd
 import json
 import sqlite3
 import csv
+from pathlib import Path
+
+# the folder where ETL.py is saved, so the paths work on every computer
+BASE_DIR = Path(__file__).resolve().parent
 
 #series_id's are the different indicators we need.
 series_id = {"CPI":"CPIAUCSL",
@@ -14,7 +18,7 @@ series_id = {"CPI":"CPIAUCSL",
           }
 
 # EPRI 2024 report: data center share of state electricity use in 2023 (made by hand, Table A1)
-EPRI_CSV = "../data/data_center_share.csv"
+EPRI_CSV = BASE_DIR / "data" / "data_center_share.csv"
 # states with a data center share of 4% or more = "high" (4% is about the US average in 2023)
 DC_HIGH_THRESHOLD = 4.0
 
@@ -26,7 +30,7 @@ class Pipeline(object):
     def extract(self):
         # Opening API_CODE map to get personal API from fred i put my IPA in a txt document
         def load_api_key():
-            with open('../API_CODE/FRED_API.txt') as f:
+            with open(BASE_DIR / "API_CODE" / "FRED_API.txt") as f:
                 api_key = f.read().strip()
             return api_key
 
@@ -61,7 +65,7 @@ class Pipeline(object):
 
         # Opening the EIA key, same way as the FRED key
         def load_eia_key():
-            with open('../API_CODE/EIA_API.txt') as f:
+            with open(BASE_DIR / "API_CODE" / "EIA_API.txt") as f:
                 return f.read().strip()
 
         # EIA gives max 5000 rows per request, so we ask page by page.
