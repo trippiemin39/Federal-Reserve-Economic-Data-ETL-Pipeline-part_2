@@ -1,56 +1,156 @@
-# Federal-Reserve-Economic-Data-ETL-Pipeline-part_1
-An ETL pipeline that extracts economic indicators from the FRED API and loads them into a star-schema data warehouse (implemented in SQLite), to research the relationship between energy prices and inflation. The whole project is built with Python and its libraries only, so the pipeline is easy to read, understand, and run from start to finish with a single command. 
+# Federal Reserve Economic Data ETL Pipeline – Part 2
 
-Energy prices are rising tremendously, and we use more energy now than ever. With inflation also increasing, I wanted to research the correlation between the two. In part two of this project I will analyze that correlation in depth and extend the pipeline for deeper research into the impact of data centers on energy prices.
+An ETL pipeline that combines national economic data (FRED), electricity data per US state (EIA) and data center data per state (EPRI) in one star-schema data warehouse (SQLite), to research the link between energy prices, inflation and data centers.
 
-<img width="2070" height="705" alt="image" src="https://github.com/user-attachments/assets/3a199292-5064-447b-b5f2-c8468f7051f5" />
+This project builds on [Part 1](https://github.com/trippiemin39/Federal-Reserve-Economic-Data-ETL-Pipeline-part_1-), which created the pipeline for 6 national indicators.
 
-The architecture of this pipeline extracts the needed data, transforms it, and loads it into a star schema, going from raw API calls to a populated, linked database.
+## Research question
 
-**Extract** - Fetches six economic indicators from the FRED API (CPI, CPI energy, electricity, gas, oil, recession indicator). The API key is kept outside the code for safety. The logic is split into a reusable fetch_series (one series) and fetch_all_series (all series), with error handling so that one failed series does not break the whole pipeline.
+**How strongly are energy prices and inflation connected, and do data centers make electricity more expensive?**
 
-**Transform** - Combines the six series into one long-format table, converts text to numbers, handles missing values, parses dates, and resamples the daily gas and oil prices into monthly averages. It builds three dimension tables (indicator, region, date) and attaches the correct ids to the fact table with a merge.
+## What is new in Part 2
 
-**Load** - Creates the tables with hand-written CREATE TABLE statements including primary and foreign keys, and loads the four tables in the correct order (dimensions first, facts last) into SQLite.
+- **Electricity prices and sales per US state** from a second API (EIA).
+- **Data center share per state** from the EPRI 2024 report.
+- **dim_region** grows from 1 region (US) to 52 (US + 50 states + DC).
+- **dim_date** is now linked to the fact table with `date_id`.
+- All data starts at **1997-01**, the first month where all FRED series overlap.
+- A **data gap check** prints missing months when the pipeline runs.
 
-<img width="861" height="657" alt="image" src="https://github.com/user-attachments/assets/786df5b2-eb90-46bb-9e4a-e5240b5d4f8e" />
+## Architecture
 
-The data model is a star schema with one fact table and three dimensions.
+![Pipeline diagram part 2](docs/pipeline_diagram_part2.png)
 
-fact table - the observations (the measured values + foreign keys)
+**Extract**
+- FRED API → 6 national indicators → `extract_output.json`
+- EIA API v2 → electricity price and sales per state, monthly from 2001 (fetched page by page, max 5,000 rows per request) → `eia_output.json`
 
-dim_indicator - what is measured (linked)
+**Transform**
+- Cleans the data (numbers, dates, missing values) and resamples daily gas and oil prices to monthly averages.
+- Cuts all data before `START_DATE` (1997-01-01).
+- Turns the EIA data into the same shape as the FRED data (date, value, indicator, region).
+- Builds the dimensions and adds the EPRI data center data to `dim_region`.
+- Builds the fact table and links it to all dimensions.
 
-dim_region - where it is measured (linked)
+**Load**
+- Creates the tables with primary and foreign keys and loads them into `FREDDY.db` (dimensions first, fact table last).
 
-dim_date - when it is measured
-	
-I kept the date dimension unconnected for now because I join on the date column directly; adding a date_id link is a planned improvement.
-I chose the star-schema model because I wanted it to stay simple — this research needed efficiency, not complexity.
+## Data model
 
-What I have learned throughout this project is that the first lines of code are easy, but after 40 lines you start to regret what you wrote in the beginning. I learned that decisions and design choices matter before writing code: you have to think about what the final main() is going to look like, about the extensibility of the pipeline, and about whether it should run in one go or be split into separate stages.
-On the technical side I learned to work with an API, clean data with Pandas, resample time series, model data dimensionally (Kimball: facts vs. dimensions, and when something deserves its own dimension versus being a row), and write SQL with foreign keys.
-But the most important lesson was learning to design before coding splitting code into functions that each do one thing, treating main() as a readable plan, and building part 1 so that part 2 can be added on top without reworking the foundation.
+A star schema with one fact table and three dimensions.
 
-Part 1 is functionally complete: a working, reproducible pipeline with a correct star schema, verified with a JOIN test showing plausible economic figures from 1947 to 2026. Part 2 — the deeper correlation analysis, the regional data-center angle, and a dashboard will be built on top of this foundation.
+| Table | What it holds |
+|---|---|
+| `facttable_observation` | Every measured value, with `indicator_id`, `region_id` and `date_id` (~66,000 rows) |
+| `dim_indicator` | What is measured: 10 indicators (6 FRED + 4 EIA), with category and unit |
+| `dim_region` | Where it is measured: US + 50 states + DC, with data center share and group (high/low) |
+| `dim_date` | When it is measured: 1997-01-01 to 2030-12-31, key `date_id` (e.g. 20240101) |
 
-Sources — National series
+## Data sources
 
-**Indicator ==	URL**
+| Source | Data | Period | Access |
+|---|---|---|---|
+| FRED | CPI, CPI energy, electricity price, natural gas, oil, recession indicator (US) | 1997 – 2026 | API (FRED key) |
+| EIA | Electricity price (cents/kWh) and sales (million kWh) per state, all sectors and commercial | 2001-01 – 2026-08 | API (EIA key) |
+| EPRI | Data center electricity use and share of state electricity use, 2023 | 2023 | Report (hand-made CSV) |
 
-General_CPI 	== fred.stlouisfed.org/series/CPIAUCSL  
+**EPRI data:** the EPRI report has no API or download. The data comes from Table A1 (Appendix A, pages 28–29) and was copied by hand into `data/data_center_share.csv`. We selected the 2023 load (MWh) and the 2023 share (%), added a state code for the join, and removed commas and % signs. The values were not changed. The 2030 projections in the table were not used.
 
-CPI_energy ==	fred.stlouisfed.org/series/CPIENGSL 
+## Design decisions
 
-Electricity_price_per_kWh == fred.stlouisfed.org/series/APU000072610 
+| Decision | Reason |
+|---|---|
+| All data starts at 1997-01 | First month where all 6 FRED series overlap (natural gas starts last) |
+| Data is cut in transform, not extract | Raw data stays complete in the JSON files |
+| EIA for state data | FRED has no electricity prices per state |
+| EIA commercial sales as data center proxy | Data centers count as commercial customers |
+| Data center share in `dim_region` | Only one year (2023) is available, so it acts as a property of a state |
+| "High" = data center share of 4% or more | About the US average in 2023; set with `DC_HIGH_THRESHOLD` |
+| EIA census regions removed | The research compares states only |
 
-Natural_gas_(Henry_Hub_spot) == fred.stlouisfed.org/series/DHHNGSP 
+## Limitations
 
-WTI_crude_oil	==	fred.stlouisfed.org/series/DC01LWTICO
+- **October 2025 is missing** in CPI, CPI energy and the FRED electricity price, because of the US government shutdown.
+- **1 missing EIA value:** Rhode Island commercial sales, November 2024.
+- **The state analysis starts in 2001**, because the monthly EIA data starts in 2001.
+- **The data center data covers one year only (2023).** A state with many data centers in 2023 may have had few in earlier years.
+- **6 states + DC are not in the EPRI table** (no significant data center load). They are counted as "low".
+- **Commercial sales are not only data centers.** They also include shops, offices and hospitals.
+- **The EPRI data was copied by hand**, so small typing mistakes are possible. The values were checked twice.
+- **Correlation is not causation.** Electricity prices also depend on fuel costs, weather, regulation and the power grid.
 
-Recession_indicator ==	fred.stlouisfed.org/series/USREC 
+## How to run
 
-Note: gas and oil are fetched as daily series and resampled to monthly averages in the transform step, instead of using FRED's ready-made monthly series. This was a deliberate choice to practice time-series resampling.
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/trippiemin39/Federal-Reserve-Economic-Data-ETL-Pipeline-part_2.git
+cd Federal-Reserve-Economic-Data-ETL-Pipeline-part_2
+```
+
+**2. Install the dependencies**
+
+```bash
+pip install -r requirements.txt
+```
+
+**3. Get two free API keys**
+
+- FRED: [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html)
+- EIA: [eia.gov/opendata](https://www.eia.gov/opendata/)
+
+**4. Add your API keys**
+
+Create a folder `API_CODE` with two text files. Put only the key in each file.
+
+```
+API_CODE/
+├── FRED_API.txt   <-- your FRED key
+└── EIA_API.txt    <-- your EIA key
+```
+
+This folder is in `.gitignore`, so your keys are never uploaded.
+
+**5. Run the pipeline**
+
+```bash
+python ETL.py
+```
+
+This creates `FREDDY.db` with the full star schema.
+
+## Project management
+
+- Tasks are planned on a **GitHub Projects** board with 5 epics, user stories and sprints.
+- We use **Git Flow**: `main` → `Develop` → `feature/<issue-number>-<name>`.
+- Every change goes through a **pull request** and a review by a teammate.
+- Team rules are in [CONTRIBUTING.md](CONTRIBUTING.md), the big picture is in [PROJECT_PLAN.md](PROJECT_PLAN.md).
+
+## Status
+
+- ✅ Epic 1 – Project setup
+- ✅ Epic 2 – Pipeline expansion (data validation checks in progress)
+- ⏳ Epic 3 – Correlation analysis
+- ⏳ Epic 4 – Dashboard
+- ⏳ Epic 5 – Documentation & delivery
+
+## References
+
+Electric Power Research Institute. (2024). *Powering intelligence: Analyzing artificial intelligence and data center energy consumption* (Report No. 3002028905). https://www.epri.com/research/products/3002028905
+
+Federal Reserve Bank of St. Louis. (n.d.). *NBER based recession indicators for the United States from the period following the peak through the trough* [Data set, USREC]. FRED. Retrieved November 4, 2026, from https://fred.stlouisfed.org/series/USREC
+
+U.S. Bureau of Labor Statistics. (n.d.-a). *Average price: Electricity per kilowatt-hour in U.S. city average* [Data set, APU000072610]. FRED, Federal Reserve Bank of St. Louis. Retrieved November 4, 2026, from https://fred.stlouisfed.org/series/APU000072610
+
+U.S. Bureau of Labor Statistics. (n.d.-b). *Consumer price index for all urban consumers: All items in U.S. city average* [Data set, CPIAUCSL]. FRED, Federal Reserve Bank of St. Louis. Retrieved November 4, 2026, from https://fred.stlouisfed.org/series/CPIAUCSL
+
+U.S. Bureau of Labor Statistics. (n.d.-c). *Consumer price index for all urban consumers: Energy in U.S. city average* [Data set, CPIENGSL]. FRED, Federal Reserve Bank of St. Louis. Retrieved November 4, 2026, from https://fred.stlouisfed.org/series/CPIENGSL
+
+U.S. Energy Information Administration. (n.d.-a). *Crude oil prices: West Texas Intermediate (WTI) – Cushing, Oklahoma* [Data set, DCOILWTICO]. FRED, Federal Reserve Bank of St. Louis. Retrieved November 4, 2026, from https://fred.stlouisfed.org/series/DCOILWTICO
+
+U.S. Energy Information Administration. (n.d.-b). *Electricity sales to ultimate customers* [Data set, electricity/retail-sales]. EIA Open Data API v2. Retrieved November 4, 2026, from https://www.eia.gov/opendata/browser/electricity/retail-sales
+
+U.S. Energy Information Administration. (n.d.-c). *Henry Hub natural gas spot price* [Data set, DHHNGSP]. FRED, Federal Reserve Bank of St. Louis. Retrieved November 4, 2026, from https://fred.stlouisfed.org/series/DHHNGSP
 
 
 
