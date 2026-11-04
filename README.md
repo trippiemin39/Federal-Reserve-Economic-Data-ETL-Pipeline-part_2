@@ -37,7 +37,8 @@ This project builds on [Part 1](https://github.com/trippiemin39/Federal-Reserve-
 
 ## Data model
 A star schema with one fact table and three dimensions.
-<img width="470" height="677" alt="image" src="https://github.com/user-attachments/assets/a43aa5ec-125b-41da-bcf7-22e9372f1ae8" />
+
+<img width="667" height="427" alt="image" src="https://github.com/user-attachments/assets/3a3af876-bc5b-4f8b-a688-78d4fc21a539" />
 
 | Table | What it holds |
 |---|---|
