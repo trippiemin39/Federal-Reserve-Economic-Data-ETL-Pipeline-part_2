@@ -1,2 +1,5 @@
-pandas
 requests
+pandas
+json
+sqlite3
+csv
