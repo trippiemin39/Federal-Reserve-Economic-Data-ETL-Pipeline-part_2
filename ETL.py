@@ -166,23 +166,69 @@ class Pipeline(object):
                     print(f"⚠️ {name} is missing {len(missing)} month(s): "
                           f"{[d.strftime('%Y-%m') for d in missing]}")
 
-        #building dim_region, this dimension will be important in part 2.
-        def build_region_dimension():
+        # ---------- EIA (part 2) ----------
+
+        # EIA also gives 10 census regions next to the states. We don't use those.
+        CENSUS_REGIONS = ["ENC", "ESC", "MAT", "MTN", "NEW", "PACC", "PACN", "SAT", "WNC", "WSC"]
+
+        # our names for the 4 EIA combinations (measure + sector)
+        EIA_INDICATORS = {
+            "price_ALL": "State_electricity_price",
+            "price_COM": "Commercial_electricity_price",
+            "sales_ALL": "State_electricity_sales",
+            "sales_COM": "Commercial_electricity_sales",
+        }
+
+        def load_eia_output():
+            with open("eia_output.json") as f:
+                return pd.DataFrame(json.load(f))
+
+        # making the EIA data look like the FRED data: date, value, indicator, region_code
+        # melt = turning the 2 columns price and sales into rows (long format)
+        def build_eia_dataframe(eia):
+            eia = eia[~eia["stateid"].isin(CENSUS_REGIONS)].copy()
+            eia["date"] = pd.to_datetime(eia["period"])
+            eia = eia[eia["date"] >= START_DATE]
+
+            long = eia.melt(id_vars=["date", "stateid", "sectorid"],
+                            value_vars=["price", "sales"],
+                            var_name="measure", value_name="value")
+            long["value"] = pd.to_numeric(long["value"], errors="coerce")
+            long = long.dropna(subset=["value"])   # 1 known gap: RI commercial sales 2024-11
+
+            long["indicator"] = (long["measure"] + "_" + long["sectorid"]).map(EIA_INDICATORS)
+            long = long.rename(columns={"stateid": "region_code"})
+            return long[["date", "value", "indicator", "region_code"]]
+
+        # building dim_region: region_id 1 = whole US, then the 50 states + DC
+        # the state names come from the EIA data itself (stateDescription)
+        def build_region_dimension(eia):
+            states = (eia[~eia["stateid"].isin(CENSUS_REGIONS + ["US"])]
+                      [["stateid", "stateDescription"]]
+                      .drop_duplicates()
+                      .sort_values("stateid"))
+
             DIM_region = pd.DataFrame({
-                "region_id": [1],
-                "region_code": ["US"],
-                "region_name": ["United State of America"]
+                "region_id": [1] + list(range(2, len(states) + 2)),
+                "region_code": ["US"] + list(states["stateid"]),
+                "region_name": ["United States of America"] + list(states["stateDescription"]),
+                "region_type": ["country"] + ["state"] * len(states),
             })
             return DIM_region
 
         #builing dim_indicator, so there will be a link to fact table with the indicator_id
         def build_indicator_dimension():
             DIM_indicator = pd.DataFrame({
-                "indicator_id": [1, 2, 3, 4, 5, 6],
-                "indicator_code": ["CPIAUCSL", "CPIENGSL", "APU000072610", "DHHNGSP", "DCOILWTICO", "USREC"],
-                "name": ["CPI", "CPIE", "Electricity_price", "Gas_price", "Oil_price", "Recession_indicator"],
-                "category": ["inflation", "inflation", "energy", "energy", "energy", "macro"],
-                "unit": ["index", "index", "USD/kWh", "USD/MMBTU", "USD/vat", "0/1"]
+                "indicator_id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                "indicator_code": ["CPIAUCSL", "CPIENGSL", "APU000072610", "DHHNGSP", "DCOILWTICO", "USREC",
+                                   "EIA_PRICE_ALL", "EIA_PRICE_COM", "EIA_SALES_ALL", "EIA_SALES_COM"],
+                "name": ["CPI", "CPIE", "Electricity_price", "Gas_price", "Oil_price", "Recession_indicator",
+                         "State_electricity_price", "Commercial_electricity_price",
+                         "State_electricity_sales", "Commercial_electricity_sales"],
+                "category": ["inflation", "inflation", "energy", "energy", "energy", "macro",
+                             "energy", "energy", "consumption", "consumption"],
+                "unit": ["index", "index", "USD/kWh", "USD/MMBTU", "USD/barrel", "0/1",
+                         "cents/kWh", "cents/kWh", "million kWh", "million kWh"]
             })
             return DIM_indicator
 
@@ -203,24 +249,36 @@ class Pipeline(object):
 
         # using the function concat to have one big table because the indicators have the same columns
         # left joining the dim_indicator with dff on 'indicator' and 'name' columns and creating a facttable
-        # adding region id (for part 2 of this project) and observation id's
-        def attach_keys(dfs, DIM_indicator):
-            dff = pd.concat(dfs.values(), ignore_index=True)
-            dff = dff.sort_values("date")
+        # FRED data is national (region US), EIA data has a region_code per state
+        # left joining dim_region on region_code to get the region_id
+        def attach_keys(dfs, eia_long, DIM_indicator, DIM_region):
+            fred = pd.concat(dfs.values(), ignore_index=True)
+            fred["region_code"] = "US"
+
+            dff = pd.concat([fred, eia_long], ignore_index=True)
+            dff = dff.sort_values(["date", "region_code"])
 
             facttable = (
                 dff.merge(
                     DIM_indicator,
                     left_on="indicator",
                     right_on="name",
+                    how="left")
+                .merge(
+                    DIM_region[["region_id", "region_code"]],
+                    on="region_code",
                     how="left"))
 
-            facttable["region_id"] = 1
+            # check: every row must have an indicator and a region
+            missing_keys = facttable[["indicator_id", "region_id"]].isna().any(axis=1).sum()
+            if missing_keys > 0:
+                print(f"⚠️ {missing_keys} rows have no indicator_id or region_id")
+
             facttable["observation_id"] = range(1, len(facttable) + 1)
             facttable["date_id"] = facttable["date"].dt.strftime("%Y%m%d").astype(int)
 
             facttable.drop(
-                ["indicator", "indicator_code", "name", "category", "unit", "date"],
+                ["indicator", "indicator_code", "name", "category", "unit", "date", "region_code"],
                 axis=1,
                 inplace=True
             )
@@ -249,11 +307,13 @@ class Pipeline(object):
 
             report_data_gaps(dfs)
 
-            DIM_region = build_region_dimension()
+            eia_raw = load_eia_output()
+            eia_long = build_eia_dataframe(eia_raw)
+            DIM_region = build_region_dimension(eia_raw)
             DIM_indicator = build_indicator_dimension()
             DIM_date = build_date_dimension()
 
-            facttable = attach_keys(dfs, DIM_indicator)
+            facttable = attach_keys(dfs, eia_long, DIM_indicator, DIM_region)
 
             save_all(facttable, DIM_indicator, DIM_date, DIM_region)
         main()
@@ -291,7 +351,8 @@ class Pipeline(object):
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_region(
                             region_id INTEGER primary key,
                             region_code TEXT,
-                            region_name TEXT);""")
+                            region_name TEXT,
+                            region_type TEXT);""")
 
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_date(
                             date_id INTEGER PRIMARY KEY,
@@ -334,7 +395,7 @@ class Pipeline(object):
             load_table(conn, "DIM_date.csv", "dim_date",
                        ["date_id", "full_date", "month", "year", "quarter", "month_name"])
             load_table(conn, "DIM_region.csv", "dim_region",
-                       ["region_id", "region_code", "region_name"])
+                       ["region_id", "region_code", "region_name", "region_type"])
 
             load_table(conn, "facttable.csv", "facttable_observation",
                        ["observation_id", "indicator_id", "region_id", "date_id", "value"])
