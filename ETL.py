@@ -13,6 +13,11 @@ series_id = {"CPI":"CPIAUCSL",
           "Recession_indicator":"USREC"
           }
 
+# EPRI 2024 report: data center share of state electricity use in 2023 (made by hand, Table A1)
+EPRI_CSV = "../data/data_center_share.csv"
+# states with a data center share of 4% or more = "high" (4% is about the US average in 2023)
+DC_HIGH_THRESHOLD = 4.0
+
 # All 6 series overlap from 1997-01 (natural gas starts last).
 # We cut all data before this date, so every indicator covers the same period.
 START_DATE = "1997-01-01"
@@ -216,6 +221,20 @@ class Pipeline(object):
             })
             return DIM_region
 
+        # adding the EPRI data center data to dim_region (one value per state, it does not change over time)
+        # 6 states + DC are not in the EPRI table (no significant data center load) -> share empty, group "low"
+        def add_data_center_share(DIM_region):
+            epri = pd.read_csv(EPRI_CSV)[["state_code", "dc_load_mwh_2023", "dc_share_2023"]]
+
+            DIM_region = DIM_region.merge(epri, left_on="region_code", right_on="state_code", how="left")
+            DIM_region = DIM_region.drop(columns="state_code")
+
+            is_state = DIM_region["region_type"] == "state"
+            DIM_region["dc_group"] = None
+            DIM_region.loc[is_state, "dc_group"] = "low"
+            DIM_region.loc[is_state & (DIM_region["dc_share_2023"] >= DC_HIGH_THRESHOLD), "dc_group"] = "high"
+            return DIM_region
+
         #builing dim_indicator, so there will be a link to fact table with the indicator_id
         def build_indicator_dimension():
             DIM_indicator = pd.DataFrame({
@@ -310,6 +329,7 @@ class Pipeline(object):
             eia_raw = load_eia_output()
             eia_long = build_eia_dataframe(eia_raw)
             DIM_region = build_region_dimension(eia_raw)
+            DIM_region = add_data_center_share(DIM_region)
             DIM_indicator = build_indicator_dimension()
             DIM_date = build_date_dimension()
 
@@ -352,7 +372,10 @@ class Pipeline(object):
                             region_id INTEGER primary key,
                             region_code TEXT,
                             region_name TEXT,
-                            region_type TEXT);""")
+                            region_type TEXT,
+                            dc_load_mwh_2023 REAL,
+                            dc_share_2023 REAL,
+                            dc_group TEXT);""")
 
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_date(
                             date_id INTEGER PRIMARY KEY,
@@ -381,7 +404,9 @@ class Pipeline(object):
                 colnames = ", ".join(columns)
 
                 sql = f"INSERT INTO {table_name} ({colnames}) VALUES ({placeholders})"
-                cur.executemany(sql, reader)
+                # empty csv cells become NULL in the database (not an empty text "")
+                rows = ([value if value != "" else None for value in row] for row in reader)
+                cur.executemany(sql, rows)
             conn.commit()
 
 
@@ -395,7 +420,8 @@ class Pipeline(object):
             load_table(conn, "DIM_date.csv", "dim_date",
                        ["date_id", "full_date", "month", "year", "quarter", "month_name"])
             load_table(conn, "DIM_region.csv", "dim_region",
-                       ["region_id", "region_code", "region_name", "region_type"])
+                       ["region_id", "region_code", "region_name", "region_type",
+                        "dc_load_mwh_2023", "dc_share_2023", "dc_group"])
 
             load_table(conn, "facttable.csv", "facttable_observation",
                        ["observation_id", "indicator_id", "region_id", "date_id", "value"])
