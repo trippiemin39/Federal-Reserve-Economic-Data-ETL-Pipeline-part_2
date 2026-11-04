@@ -21,7 +21,7 @@ class Pipeline(object):
     def extract(self):
         # Opening API_CODE map to get personal API from fred i put my IPA in a txt document
         def load_api_key():
-            with open('API_CODE/FRED_API.txt') as f:
+            with open('../API_CODE/FRED_API.txt') as f:
                 api_key = f.read().strip()
             return api_key
 
@@ -52,6 +52,57 @@ class Pipeline(object):
                 dfs[name] = df
             return dfs
 
+        # ---------- EIA (part 2): electricity price + sales per US state ----------
+
+        # Opening the EIA key, same way as the FRED key
+        def load_eia_key():
+            with open('../API_CODE/EIA_API.txt') as f:
+                return f.read().strip()
+
+        # EIA gives max 5000 rows per request, so we ask page by page.
+        # price = cents per kWh, sales = million kWh
+        # sectorid ALL = all customers, COM = commercial (our data center proxy)
+        def fetch_eia_retail_sales(eia_key, start="2001-01"):
+            url = "https://api.eia.gov/v2/electricity/retail-sales/data/"
+            rows = []
+            offset = 0
+
+            while True:
+                params = {
+                    "api_key": eia_key,
+                    "frequency": "monthly",
+                    "data[0]": "price",
+                    "data[1]": "sales",
+                    "facets[sectorid][]": ["ALL", "COM"],
+                    "start": start,
+                    "sort[0][column]": "period",
+                    "sort[0][direction]": "asc",
+                    "offset": offset,
+                    "length": 5000,
+                }
+                try:
+                    response = requests.get(url, params=params, timeout=30)
+                    response.raise_for_status()
+                    page = response.json()["response"]["data"]
+                except Exception as e:
+                    print(f"❌ EIA fetch failed at offset {offset}: {e}")
+                    break
+
+                if not page:          # empty page = we have everything
+                    break
+                rows.extend(page)
+                offset += 5000
+
+            print(f"✅ EIA rows fetched: {len(rows)}")
+            return rows
+
+        # saving the EIA rows to their own json file
+        def save_eia_json(rows):
+            with open("eia_output.json", "w") as f:
+                json.dump(rows, f)
+
+        # ---------- FRED ----------
+
         # every dataframe is converted to a json file, orient=record means every record is an json object
         def save_json(dfs):
             json_dict = {name: df.to_dict(orient="records") for name, df in dfs.items()}
@@ -62,6 +113,10 @@ class Pipeline(object):
             api_key = load_api_key()
             json_dict = fetch_all_series(series_id, api_key)
             save_json(json_dict)
+
+            eia_key = load_eia_key()
+            eia_rows = fetch_eia_retail_sales(eia_key)
+            save_eia_json(eia_rows)
         main()
 
 
@@ -291,14 +346,6 @@ if __name__ == "__main__":
     pipeline.extract()
     pipeline.transform()
     pipeline.load()
-
-
-
-
-
-
-
-
 
 
 
