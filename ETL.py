@@ -13,6 +13,10 @@ series_id = {"CPI":"CPIAUCSL",
           "Recession_indicator":"USREC"
           }
 
+# All 6 series overlap from 1997-01 (natural gas starts last).
+# We cut all data before this date, so every indicator covers the same period.
+START_DATE = "1997-01-01"
+
 class Pipeline(object):
     def extract(self):
         # Opening API_CODE map to get personal API from fred i put my IPA in a txt document
@@ -93,6 +97,20 @@ class Pipeline(object):
             monthly["indicator"] = df["indicator"].iloc[0]
             return monthly
 
+        # keeping only data from START_DATE, so all indicators start at the same time
+        def filter_start_date(df):
+            return df[df["date"] >= START_DATE].reset_index(drop=True)
+
+        # DATA GAP CHECK: prints the months that are missing per indicator
+        # known gap: October 2025 is missing in CPI (US government shutdown, no BLS data)
+        def report_data_gaps(dfs):
+            for name, df in dfs.items():
+                all_months = pd.date_range(df["date"].min(), df["date"].max(), freq="MS")
+                missing = all_months.difference(df["date"])
+                if len(missing) > 0:
+                    print(f"⚠️ {name} is missing {len(missing)} month(s): "
+                          f"{[d.strftime('%Y-%m') for d in missing]}")
+
         #building dim_region, this dimension will be important in part 2.
         def build_region_dimension():
             DIM_region = pd.DataFrame({
@@ -113,9 +131,9 @@ class Pipeline(object):
             })
             return DIM_indicator
 
-        # making the date dimension from the first date in our data until 2030
+        # making the date dimension from START_DATE until 2030
         # date_id is a number like 20240101, so the fact table can link to it
-        def build_date_dimension(start, end="2030-12-31"):
+        def build_date_dimension(start=START_DATE, end="2030-12-31"):
             dates = pd.date_range(start=start, end=end, freq="D")
 
             DIM_date = pd.DataFrame({
@@ -171,10 +189,14 @@ class Pipeline(object):
             for name in ["Gas_price", "Oil_price"]:
                 dfs[name] = resample_price_series(dfs[name])
 
+            for name in dfs:
+                dfs[name] = filter_start_date(dfs[name])
+
+            report_data_gaps(dfs)
+
             DIM_region = build_region_dimension()
             DIM_indicator = build_indicator_dimension()
-            first_date = min(df["date"].min() for df in dfs.values())
-            DIM_date = build_date_dimension(first_date)
+            DIM_date = build_date_dimension()
 
             facttable = attach_keys(dfs, DIM_indicator)
 
@@ -269,9 +291,6 @@ if __name__ == "__main__":
     pipeline.extract()
     pipeline.transform()
     pipeline.load()
-
-
-
 
 
 
