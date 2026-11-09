@@ -95,7 +95,7 @@ Open the folder in File Explorer, right-click on an empty spot → **Open in Ter
 **3. Install the dependencies**
 
 ```bash
-pip install -r requirements.txt
+py -m pip install -r requirements.txt
 ```
 
 **4. Get two free API keys**
@@ -124,7 +124,7 @@ This downloads the data and creates `FREDDY.db` with the full star schema.
 **7. Open the dashboard**
 
 ```bash
-streamlit run app.py
+py -m streamlit run app.py
 ```
 
 Your browser opens the dashboard with 5 tabs: Overview, RQ1 + RQ2, RQ3, RQ4 and Limitations.
