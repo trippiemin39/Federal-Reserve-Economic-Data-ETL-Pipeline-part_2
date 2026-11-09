@@ -3,6 +3,10 @@ import pandas as pd
 import json
 import sqlite3
 import csv
+from pathlib import Path
+
+# the folder where ETL.py is saved, so the paths work on every computer
+BASE_DIR = Path(__file__).resolve().parent
 
 #series_id's are the different indicators we need.
 series_id = {"CPI":"CPIAUCSL",
@@ -13,11 +17,20 @@ series_id = {"CPI":"CPIAUCSL",
           "Recession_indicator":"USREC"
           }
 
+# EPRI 2024 report: data center share of state electricity use in 2023 (made by hand, Table A1)
+EPRI_CSV = BASE_DIR / "data" / "data_center_share.csv"
+# states with a data center share of 4% or more = "high" (4% is about the US average in 2023)
+DC_HIGH_THRESHOLD = 4.0
+
+# All 6 series overlap from 1997-01 (natural gas starts last).
+# We cut all data before this date, so every indicator covers the same period.
+START_DATE = "1997-01-01"
+
 class Pipeline(object):
     def extract(self):
         # Opening API_CODE map to get personal API from fred i put my IPA in a txt document
         def load_api_key():
-            with open('API_CODE/FRED_API.txt') as f:
+            with open(BASE_DIR / "API_CODE" / "FRED_API.txt") as f:
                 api_key = f.read().strip()
             return api_key
 
@@ -48,6 +61,57 @@ class Pipeline(object):
                 dfs[name] = df
             return dfs
 
+        # ---------- EIA (part 2): electricity price + sales per US state ----------
+
+        # Opening the EIA key, same way as the FRED key
+        def load_eia_key():
+            with open(BASE_DIR / "API_CODE" / "EIA_API.txt") as f:
+                return f.read().strip()
+
+        # EIA gives max 5000 rows per request, so we ask page by page.
+        # price = cents per kWh, sales = million kWh
+        # sectorid ALL = all customers, COM = commercial (our data center proxy)
+        def fetch_eia_retail_sales(eia_key, start="2001-01"):
+            url = "https://api.eia.gov/v2/electricity/retail-sales/data/"
+            rows = []
+            offset = 0
+
+            while True:
+                params = {
+                    "api_key": eia_key,
+                    "frequency": "monthly",
+                    "data[0]": "price",
+                    "data[1]": "sales",
+                    "facets[sectorid][]": ["ALL", "COM"],
+                    "start": start,
+                    "sort[0][column]": "period",
+                    "sort[0][direction]": "asc",
+                    "offset": offset,
+                    "length": 5000,
+                }
+                try:
+                    response = requests.get(url, params=params, timeout=30)
+                    response.raise_for_status()
+                    page = response.json()["response"]["data"]
+                except Exception as e:
+                    print(f"❌ EIA fetch failed at offset {offset}: {e}")
+                    break
+
+                if not page:          # empty page = we have everything
+                    break
+                rows.extend(page)
+                offset += 5000
+
+            print(f"✅ EIA rows fetched: {len(rows)}")
+            return rows
+
+        # saving the EIA rows to their own json file
+        def save_eia_json(rows):
+            with open("eia_output.json", "w") as f:
+                json.dump(rows, f)
+
+        # ---------- FRED ----------
+
         # every dataframe is converted to a json file, orient=record means every record is an json object
         def save_json(dfs):
             json_dict = {name: df.to_dict(orient="records") for name, df in dfs.items()}
@@ -58,6 +122,10 @@ class Pipeline(object):
             api_key = load_api_key()
             json_dict = fetch_all_series(series_id, api_key)
             save_json(json_dict)
+
+            eia_key = load_eia_key()
+            eia_rows = fetch_eia_retail_sales(eia_key)
+            save_eia_json(eia_rows)
         main()
 
 
@@ -93,34 +161,108 @@ class Pipeline(object):
             monthly["indicator"] = df["indicator"].iloc[0]
             return monthly
 
-        #building dim_region, this dimension will be important in part 2.
-        def build_region_dimension():
+        # keeping only data from START_DATE, so all indicators start at the same time
+        def filter_start_date(df):
+            return df[df["date"] >= START_DATE].reset_index(drop=True)
+
+        # DATA GAP CHECK: prints the months that are missing per indicator
+        # known gap: October 2025 is missing in CPI (US government shutdown, no BLS data)
+        def report_data_gaps(dfs):
+            for name, df in dfs.items():
+                all_months = pd.date_range(df["date"].min(), df["date"].max(), freq="MS")
+                missing = all_months.difference(df["date"])
+                if len(missing) > 0:
+                    print(f"⚠️ {name} is missing {len(missing)} month(s): "
+                          f"{[d.strftime('%Y-%m') for d in missing]}")
+
+        # ---------- EIA (part 2) ----------
+
+        # EIA also gives 10 census regions next to the states. We don't use those.
+        CENSUS_REGIONS = ["ENC", "ESC", "MAT", "MTN", "NEW", "PACC", "PACN", "SAT", "WNC", "WSC"]
+
+        # our names for the 4 EIA combinations (measure + sector)
+        EIA_INDICATORS = {
+            "price_ALL": "State_electricity_price",
+            "price_COM": "Commercial_electricity_price",
+            "sales_ALL": "State_electricity_sales",
+            "sales_COM": "Commercial_electricity_sales",
+        }
+
+        def load_eia_output():
+            with open("eia_output.json") as f:
+                return pd.DataFrame(json.load(f))
+
+        # making the EIA data look like the FRED data: date, value, indicator, region_code
+        # melt = turning the 2 columns price and sales into rows (long format)
+        def build_eia_dataframe(eia):
+            eia = eia[~eia["stateid"].isin(CENSUS_REGIONS)].copy()
+            eia["date"] = pd.to_datetime(eia["period"])
+            eia = eia[eia["date"] >= START_DATE]
+
+            long = eia.melt(id_vars=["date", "stateid", "sectorid"],
+                            value_vars=["price", "sales"],
+                            var_name="measure", value_name="value")
+            long["value"] = pd.to_numeric(long["value"], errors="coerce")
+            long = long.dropna(subset=["value"])   # 1 known gap: RI commercial sales 2024-11
+
+            long["indicator"] = (long["measure"] + "_" + long["sectorid"]).map(EIA_INDICATORS)
+            long = long.rename(columns={"stateid": "region_code"})
+            return long[["date", "value", "indicator", "region_code"]]
+
+        # building dim_region: region_id 1 = whole US, then the 50 states + DC
+        # the state names come from the EIA data itself (stateDescription)
+        def build_region_dimension(eia):
+            states = (eia[~eia["stateid"].isin(CENSUS_REGIONS + ["US"])]
+                      [["stateid", "stateDescription"]]
+                      .drop_duplicates()
+                      .sort_values("stateid"))
+
             DIM_region = pd.DataFrame({
-                "region_id": [1],
-                "region_code": ["US"],
-                "region_name": ["United State of America"]
+                "region_id": [1] + list(range(2, len(states) + 2)),
+                "region_code": ["US"] + list(states["stateid"]),
+                "region_name": ["United States of America"] + list(states["stateDescription"]),
+                "region_type": ["country"] + ["state"] * len(states),
             })
+            return DIM_region
+
+        # adding the EPRI data center data to dim_region (one value per state, it does not change over time)
+        # 6 states + DC are not in the EPRI table (no significant data center load) -> share empty, group "low"
+        def add_data_center_share(DIM_region):
+            epri = pd.read_csv(EPRI_CSV)[["state_code", "dc_load_mwh_2023", "dc_share_2023"]]
+
+            DIM_region = DIM_region.merge(epri, left_on="region_code", right_on="state_code", how="left")
+            DIM_region = DIM_region.drop(columns="state_code")
+
+            is_state = DIM_region["region_type"] == "state"
+            DIM_region["dc_group"] = None
+            DIM_region.loc[is_state, "dc_group"] = "low"
+            DIM_region.loc[is_state & (DIM_region["dc_share_2023"] >= DC_HIGH_THRESHOLD), "dc_group"] = "high"
             return DIM_region
 
         #builing dim_indicator, so there will be a link to fact table with the indicator_id
         def build_indicator_dimension():
             DIM_indicator = pd.DataFrame({
-                "indicator_id": [1, 2, 3, 4, 5, 6],
-                "indicator_code": ["CPIAUCSL", "CPIENGSL", "APU000072610", "DHHNGSP", "DCOILWTICO", "USREC"],
-                "name": ["CPI", "CPIE", "Electricity_price", "Gas_price", "Oil_price", "Recession_indicator"],
-                "category": ["inflation", "inflation", "energy", "energy", "energy", "macro"],
-                "unit": ["index", "index", "USD/kWh", "USD/MMBTU", "USD/vat", "0/1"]
+                "indicator_id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                "indicator_code": ["CPIAUCSL", "CPIENGSL", "APU000072610", "DHHNGSP", "DCOILWTICO", "USREC",
+                                   "EIA_PRICE_ALL", "EIA_PRICE_COM", "EIA_SALES_ALL", "EIA_SALES_COM"],
+                "name": ["CPI", "CPIE", "Electricity_price", "Gas_price", "Oil_price", "Recession_indicator",
+                         "State_electricity_price", "Commercial_electricity_price",
+                         "State_electricity_sales", "Commercial_electricity_sales"],
+                "category": ["inflation", "inflation", "energy", "energy", "energy", "macro",
+                             "energy", "energy", "consumption", "consumption"],
+                "unit": ["index", "index", "USD/kWh", "USD/MMBTU", "USD/barrel", "0/1",
+                         "cents/kWh", "cents/kWh", "million kWh", "million kWh"]
             })
             return DIM_indicator
 
-        # settin the start and end for Dimension date and making the dimension date
-        def build_date_dimension():
-            start = "1947-01-01"
-            end = "2030-12-31"
+        # making the date dimension from START_DATE until 2030
+        # date_id is a number like 20240101, so the fact table can link to it
+        def build_date_dimension(start=START_DATE, end="2030-12-31"):
             dates = pd.date_range(start=start, end=end, freq="D")
 
             DIM_date = pd.DataFrame({
-                "full_date": dates,
+                "date_id": dates.strftime("%Y%m%d").astype(int),
+                "full_date": dates.strftime("%Y-%m-%d"),
                 "month": dates.month,
                 "year": dates.year,
                 "quarter": dates.quarter,
@@ -130,26 +272,41 @@ class Pipeline(object):
 
         # using the function concat to have one big table because the indicators have the same columns
         # left joining the dim_indicator with dff on 'indicator' and 'name' columns and creating a facttable
-        # adding region id (for part 2 of this project) and observation id's
-        def attach_keys(dfs, DIM_indicator):
-            dff = pd.concat(dfs.values(), ignore_index=True)
-            dff = dff.sort_values("date")
+        # FRED data is national (region US), EIA data has a region_code per state
+        # left joining dim_region on region_code to get the region_id
+        def attach_keys(dfs, eia_long, DIM_indicator, DIM_region):
+            fred = pd.concat(dfs.values(), ignore_index=True)
+            fred["region_code"] = "US"
+
+            dff = pd.concat([fred, eia_long], ignore_index=True)
+            dff = dff.sort_values(["date", "region_code"])
 
             facttable = (
                 dff.merge(
                     DIM_indicator,
                     left_on="indicator",
                     right_on="name",
+                    how="left")
+                .merge(
+                    DIM_region[["region_id", "region_code"]],
+                    on="region_code",
                     how="left"))
 
-            facttable["region_id"] = 1
+            # check: every row must have an indicator and a region
+            missing_keys = facttable[["indicator_id", "region_id"]].isna().any(axis=1).sum()
+            if missing_keys > 0:
+                print(f"⚠️ {missing_keys} rows have no indicator_id or region_id")
+
             facttable["observation_id"] = range(1, len(facttable) + 1)
+            facttable["date_id"] = facttable["date"].dt.strftime("%Y%m%d").astype(int)
 
             facttable.drop(
-                ["indicator", "indicator_code", "name", "category", "unit"],
+                ["indicator", "indicator_code", "name", "category", "unit", "date", "region_code"],
                 axis=1,
                 inplace=True
             )
+            # fixed column order, because load() inserts the csv columns in this order
+            facttable = facttable[["observation_id", "indicator_id", "region_id", "date_id", "value"]]
             return facttable
 
 
@@ -168,11 +325,19 @@ class Pipeline(object):
             for name in ["Gas_price", "Oil_price"]:
                 dfs[name] = resample_price_series(dfs[name])
 
-            DIM_region = build_region_dimension()
+            for name in dfs:
+                dfs[name] = filter_start_date(dfs[name])
+
+            report_data_gaps(dfs)
+
+            eia_raw = load_eia_output()
+            eia_long = build_eia_dataframe(eia_raw)
+            DIM_region = build_region_dimension(eia_raw)
+            DIM_region = add_data_center_share(DIM_region)
             DIM_indicator = build_indicator_dimension()
             DIM_date = build_date_dimension()
 
-            facttable = attach_keys(dfs, DIM_indicator)
+            facttable = attach_keys(dfs, eia_long, DIM_indicator, DIM_region)
 
             save_all(facttable, DIM_indicator, DIM_date, DIM_region)
         main()
@@ -187,17 +352,18 @@ class Pipeline(object):
             #connect to the database
         def connect_db(datawarehouse):
             conn = sqlite3.connect(datawarehouse)
+            conn.execute("PRAGMA foreign_keys = ON;")  # SQLite checks foreign keys only when this is on
             return conn
 
         #creating 4 tables with hand written CREATE table statements including primary and forein keys
         def create_tables(conn):
             cur = conn.cursor()
 
+            # drop the fact table first, because it points to the dimensions
+            cur.execute("""DROP TABLE IF EXISTS facttable_observation;""")
             cur.execute("""DROP TABLE IF EXISTS dim_indicator;""")
             cur.execute("""DROP TABLE IF EXISTS dim_region;""")
             cur.execute("""DROP TABLE IF EXISTS dim_date;""")
-            cur.execute("""DROP TABLE IF EXISTS facttable_observation;""")
-            conn.execute("PRAGMA foreign_keys = ON;")
 
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_indicator(
                             indicator_id INTEGER primary key,
@@ -209,9 +375,14 @@ class Pipeline(object):
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_region(
                             region_id INTEGER primary key,
                             region_code TEXT,
-                            region_name TEXT);""")
+                            region_name TEXT,
+                            region_type TEXT,
+                            dc_load_mwh_2023 REAL,
+                            dc_share_2023 REAL,
+                            dc_group TEXT);""")
 
             cur.execute("""CREATE TABLE IF NOT EXISTS dim_date(
+                            date_id INTEGER PRIMARY KEY,
                             full_date TEXT,
                             month INTEGER,
                             year INTEGER,
@@ -222,7 +393,7 @@ class Pipeline(object):
                         observation_id INTEGER primary key,
                         indicator_id INTEGER REFERENCES dim_indicator(indicator_id),
                         region_id INTEGER REFERENCES dim_region(region_id),
-                        date TEXT,
+                        date_id INTEGER REFERENCES dim_date(date_id),
                         value FLOAT);""")
             conn.commit()
 
@@ -237,7 +408,9 @@ class Pipeline(object):
                 colnames = ", ".join(columns)
 
                 sql = f"INSERT INTO {table_name} ({colnames}) VALUES ({placeholders})"
-                cur.executemany(sql, reader)
+                # empty csv cells become NULL in the database (not an empty text "")
+                rows = ([value if value != "" else None for value in row] for row in reader)
+                cur.executemany(sql, rows)
             conn.commit()
 
 
@@ -249,12 +422,13 @@ class Pipeline(object):
             load_table(conn, "DIM_indicator.csv", "dim_indicator",
                        ["indicator_id", "indicator_code", "name", "category", "unit"])
             load_table(conn, "DIM_date.csv", "dim_date",
-                       ["full_date", "month", "year", "quarter", "month_name"])
+                       ["date_id", "full_date", "month", "year", "quarter", "month_name"])
             load_table(conn, "DIM_region.csv", "dim_region",
-                       ["region_id", "region_code", "region_name"])
+                       ["region_id", "region_code", "region_name", "region_type",
+                        "dc_load_mwh_2023", "dc_share_2023", "dc_group"])
 
             load_table(conn, "facttable.csv", "facttable_observation",
-                       ["date", "value", "indicator_id", "region_id", "observation_id"])
+                       ["observation_id", "indicator_id", "region_id", "date_id", "value"])
         main()
 
 
@@ -263,19 +437,6 @@ if __name__ == "__main__":
     pipeline.extract()
     pipeline.transform()
     pipeline.load()
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
