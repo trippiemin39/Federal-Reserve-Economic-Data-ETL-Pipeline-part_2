@@ -69,16 +69,7 @@ A star schema with one fact table and three dimensions.
 | "High" = data center share of 4% or more | About the US average in 2023; set with `DC_HIGH_THRESHOLD` |
 | EIA census regions removed | The research compares states only |
 
-## Limitations
-
-- **October 2025 is missing** in CPI, CPI energy and the FRED electricity price, because of the US government shutdown.
-- **1 missing EIA value:** Rhode Island commercial sales, November 2024.
-- **The state analysis starts in 2001**, because the monthly EIA data starts in 2001.
-- **The data center data covers one year only (2023).** A state with many data centers in 2023 may have had few in earlier years.
-- **6 states + DC are not in the EPRI table** (no significant data center load). They are counted as "low".
-- **Commercial sales are not only data centers.** They also include shops, offices and hospitals.
-- **The EPRI data was copied by hand**, so small typing mistakes are possible. The values were checked twice.
-- **Correlation is not causation.** Electricity prices also depend on fuel costs, weather, regulation and the power grid.
+The limitations of the data and the analysis are explained in the **Limitations** tab of the dashboard.
 
 ## Project management
 
@@ -126,12 +117,21 @@ python ETL.py
 ```
 
 This creates `FREDDY.db` with the full star schema.
+
+**6. Open the dashboard**
+
+```bash
+streamlit run app.py
+```
+
+Your browser opens the dashboard with 5 tabs: Overview, RQ1 + RQ2, RQ3, RQ4 and Limitations.
+
 ## Status
 
 - ✅ Epic 1 – Project setup
-- ✅ Epic 2 – Pipeline expansion (data validation checks in progress)
-- ⏳ Epic 3 – Correlation analysis
-- ⏳ Epic 4 – Dashboard
+- ✅ Epic 2 – Pipeline expansion
+- ✅ Epic 3 – Correlation analysis
+- ⏳ Epic 4 – Dashboard (built, feedback in progress)
 - ⏳ Epic 5 – Documentation & delivery
 
 ## References
@@ -151,7 +151,6 @@ U.S. Energy Information Administration. (n.d.-a). *Crude oil prices: West Texas 
 U.S. Energy Information Administration. (n.d.-b). *Electricity sales to ultimate customers* [Data set, electricity/retail-sales]. EIA Open Data API v2. Retrieved November 4, 2026, from https://www.eia.gov/opendata/browser/electricity/retail-sales
 
 U.S. Energy Information Administration. (n.d.-c). *Henry Hub natural gas spot price* [Data set, DHHNGSP]. FRED, Federal Reserve Bank of St. Louis. Retrieved November 4, 2026, from https://fred.stlouisfed.org/series/DHHNGSP
-
 
 
 
