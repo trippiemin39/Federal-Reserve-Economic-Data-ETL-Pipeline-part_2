@@ -80,27 +80,32 @@ The limitations of the data and the analysis are explained in the **Limitations*
 
 ## How to run
 
-**1. Clone the repository**
+You need **Python 3** on your computer ([python.org/downloads](https://www.python.org/downloads/)).
 
-```bash
-git clone https://github.com/trippiemin39/Federal-Reserve-Economic-Data-ETL-Pipeline-part_2.git
-cd Federal-Reserve-Economic-Data-ETL-Pipeline-part_2
-```
+**1. Download the project**
 
-**2. Install the dependencies**
+On this page, click the green **Code** button → **Download ZIP**.
+Unzip the file. You now have a folder called `Federal-Reserve-Economic-Data-ETL-Pipeline-part_2-main`.
+
+**2. Open a terminal in that folder**
+
+Open the folder in File Explorer, right-click on an empty spot → **Open in Terminal**.
+(Or open the folder in PyCharm and use the terminal at the bottom.)
+
+**3. Install the dependencies**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**3. Get two free API keys**
+**4. Get two free API keys**
 
 - FRED: [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html)
 - EIA: [eia.gov/opendata](https://www.eia.gov/opendata/)
 
-**4. Add your API keys**
+**5. Add your API keys**
 
-Create a folder `API_CODE` with two text files. Put only the key in each file.
+Inside the project folder, create a folder `API_CODE` with two text files. Put only the key in each file.
 
 ```
 API_CODE/
@@ -108,17 +113,15 @@ API_CODE/
 └── EIA_API.txt    <-- your EIA key
 ```
 
-This folder is in `.gitignore`, so your keys are never uploaded.
-
-**5. Run the pipeline**
+**6. Run the pipeline**
 
 ```bash
 python ETL.py
 ```
 
-This creates `FREDDY.db` with the full star schema.
+This downloads the data and creates `FREDDY.db` with the full star schema.
 
-**6. Open the dashboard**
+**7. Open the dashboard**
 
 ```bash
 streamlit run app.py
@@ -131,8 +134,8 @@ Your browser opens the dashboard with 5 tabs: Overview, RQ1 + RQ2, RQ3, RQ4 and 
 - ✅ Epic 1 – Project setup
 - ✅ Epic 2 – Pipeline expansion
 - ✅ Epic 3 – Correlation analysis
-- ⏳ Epic 4 – Dashboard (built, feedback in progress)
-- ⏳ Epic 5 – Documentation & delivery
+- ✅ Epic 4 – Dashboard (built, feedback in progress)
+- ✅ Epic 5 – Documentation & delivery
 
 ## References
 
