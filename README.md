@@ -116,7 +116,7 @@ API_CODE/
 **6. Run the pipeline**
 
 ```bash
-python ETL.py
+py ETL.py
 ```
 
 This downloads the data and creates `FREDDY.db` with the full star schema.
